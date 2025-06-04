@@ -59,7 +59,7 @@ class ONNXExporter:
         text_input = torch.randint(0, 10000, (batch_size, text_seq_len), dtype=torch.int32)
 
         input_names = ["image", "text"]
-        output_names = ["image_features", "text_features"]
+        output_names = ["image_features", "text_features", "logit_scale"]
 
         dynamic_axes = {
             "image": {0: "batch"},

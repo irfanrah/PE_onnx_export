@@ -54,18 +54,17 @@ Missing keys for loading model: []
 Unexpected keys for loading model: []
 Input shapes: torch.Size([1, 3, 224, 224]) torch.Size([3, 32])
 ONNX input names: ['image', 'text']
-ONNX output names: ['image_features', 'text_features', '9485']
+ONNX output names: ['image_features', 'text_features', 'logit_scale']
 
 Results
 Image features similarity: 1.0000
 Text features similarity:  1.0000
+logit_scale_mse:    0.0000
 
-PyTorch probs: [[3.6975723e-06 9.9997842e-01 1.7917922e-05]]
-ONNX probs:    [[3.7763546e-06 9.9997818e-01 1.8028752e-05]]
-
+PyTorch V-T sim_score: [[3.6975723e-06 9.9997842e-01 1.7917922e-05]]
+ONNX V-T sim_score:    [[3.7763546e-06 9.9997818e-01 1.8028752e-05]]
 Cosine similarity: 1.0000
 MSE:               0.000000
-
 ✅ ONNX output is sufficiently similar (≥95%) to PyTorch
 ```
 
@@ -77,21 +76,20 @@ MSE:               0.000000
 📁 Testing model: PE-Core-L14-336
 Missing keys for loading model: []
 Unexpected keys for loading model: []
-Input shapes: torch.Size([1, 3, 336, 336]) torch.Size([3, 32])
 ONNX input names: ['image', 'text']
-ONNX output names: ['image_features', 'text_features', '13612']
+ONNX output names: ['image_features', 'text_features', 'logit_scale']
 
 Results
 Image features similarity: 1.0000
 Text features similarity:  1.0000
+logit_scale_mse:    0.0000
 
-PyTorch probs: [[1.2530895e-06 9.9994528e-01 5.3491265e-05]]
-ONNX probs:    [[1.2691744e-06 9.9994433e-01 5.4417895e-05]]
-
+PyTorch V-T sim_score: [[1.2530895e-06 9.9994528e-01 5.3491265e-05]]
+ONNX V-T sim_score:    [[1.2691706e-06 9.9994433e-01 5.4417742e-05]]
 Cosine similarity: 1.0000
 MSE:               0.000000
-
 ✅ ONNX output is sufficiently similar (≥95%) to PyTorch
+
 ```
 
 ---

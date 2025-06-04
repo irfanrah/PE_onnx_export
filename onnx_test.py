@@ -34,12 +34,9 @@ class CLIPONNXTester:
     def run_torch_inference(self):
         with torch.no_grad(), torch.autocast("cuda"):
             image_feat, text_feat, logit_scale = self.model(self.image, self.text)
-            probs = (logit_scale * image_feat @ text_feat.T).softmax(dim=-1)
+            sim_score = (logit_scale * image_feat @ text_feat.T).softmax(dim=-1)
 
-        self.image_features_pt = image_feat
-        self.text_features_pt = text_feat
-        self.probs_pt = probs
-        self.logit_scale_val = logit_scale.item()
+        return image_feat, text_feat, logit_scale, sim_score
 
     def run_onnx_inference(self):
         image_cpu = self.image.cpu().numpy().astype(np.float32)
@@ -57,24 +54,32 @@ class CLIPONNXTester:
         }
 
         outputs = ort_session.run(None, input_feed)
-        self.image_features_onnx = torch.from_numpy(outputs[0]).cuda().float()
-        self.text_features_onnx = torch.from_numpy(outputs[1]).cuda().float()
+        image_feat = torch.from_numpy(outputs[0]).cuda().float()
+        text_feat = torch.from_numpy(outputs[1]).cuda().float()
+        logit_scale = torch.from_numpy(outputs[2]).cuda().float()
 
-        self.probs_onnx = (
-            self.logit_scale_val * self.image_features_onnx @ self.text_features_onnx.T
+        sim_score = (
+            logit_scale * image_feat @ text_feat.T
         ).softmax(dim=-1)
 
+        return image_feat, text_feat, logit_scale, sim_score
+
     def compare_outputs(self):
-        image_sim = F.cosine_similarity(self.image_features_pt, self.image_features_onnx).item()
-        text_sim = F.cosine_similarity(self.text_features_pt, self.text_features_onnx, dim=-1).mean().item()
-        cos_sim = F.cosine_similarity(self.probs_pt, self.probs_onnx).item()
-        mse = F.mse_loss(self.probs_pt, self.probs_onnx).item()
+        image_feat_pt, text_feat_pt, logit_scale_pt, sim_score_pt = self.run_torch_inference()
+        image_feat_onnx, text_feat_onnx, logit_scale_onnx, sim_score_onnx = self.run_onnx_inference()
+
+        image_sim = F.cosine_similarity(image_feat_pt, image_feat_onnx).item()
+        text_sim = F.cosine_similarity(text_feat_pt, text_feat_onnx, dim=-1).mean().item()
+        logit_scale_mse = F.mse_loss(logit_scale_pt, logit_scale_onnx).item()
+        cos_sim = F.cosine_similarity(sim_score_pt, sim_score_onnx).item()
+        mse = F.mse_loss(sim_score_pt, sim_score_onnx).item()
 
         print("\nResults")
         print(f"Image features similarity: {image_sim:.4f}")
         print(f"Text features similarity:  {text_sim:.4f}")
-        print(f"\nPyTorch probs: {self.probs_pt.cpu().numpy()}")
-        print(f"ONNX probs:    {self.probs_onnx.cpu().numpy()}")
+        print(f"logit_scale_mse:    {logit_scale_mse:.4f}")
+        print(f"\nPyTorch V-T sim_score: {sim_score_pt.cpu().numpy()}")
+        print(f"ONNX V-T sim_score:    {sim_score_onnx.cpu().numpy()}")
         print(f"Cosine similarity: {cos_sim:.4f}")
         print(f"MSE:               {mse:.6f}")
 
@@ -84,14 +89,12 @@ class CLIPONNXTester:
             print("❌ ONNX output differs significantly. Check export fidelity.")
 
     def run_all(self):
-        self.run_torch_inference()
-        self.run_onnx_inference()
         self.compare_outputs()
 
 if __name__ == "__main__":
     tester = CLIPONNXTester(
-        config_name="PE-Core-L14-336",
-        onnx_path="onnx_export/PE-Core-L14-336/PE-Core-L14-336.onnx",
+        config_name="PE-Core-B16-224",
+        onnx_path="onnx_export/PE-Core-B16-224/PE-Core-B16-224.onnx",
         image_path="assets/dog.jpg",
         texts=["a diagram", "a dog", "a cat"]
     )
