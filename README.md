@@ -46,51 +46,68 @@ Unofficial implementation for exporting [Perception Encoder (PE)] models to ONNX
 
 ## ✅ Sample Output
 
-### Model: `PE-Core-B16-224`
+```bash
+(onnx) kurnianto@pia:~/code/PE_onnx_export$ python onnx_test.py 
 
-```
-📁 Testing model: PE-Core-B16-224
+================================================================================
+Testing PE-Core-B16-224
+================================================================================
 Missing keys for loading model: []
 Unexpected keys for loading model: []
-Input shapes: torch.Size([1, 3, 224, 224]) torch.Size([3, 32])
-ONNX input names: ['image', 'text']
-ONNX output names: ['image_features', 'text_features', 'logit_scale']
 
-Results
-Image features similarity: 1.0000
-Text features similarity:  1.0000
-logit_scale_mse:    0.0000
+/home/kurnianto/anaconda3/envs/onnx/lib/python3.11/site-packages/onnxruntime/capi/onnxruntime_inference_collection.py:121: UserWarning: 
+Specified provider 'CUDAExecutionProvider' is not in available provider names.
+Available providers: 'AzureExecutionProvider, CPUExecutionProvider'
+  warnings.warn()
 
-PyTorch V-T sim_score: [[3.6975723e-06 9.9997842e-01 1.7917922e-05]]
-ONNX V-T sim_score:    [[3.7763546e-06 9.9997818e-01 1.8028752e-05]]
-Cosine similarity: 1.0000
-MSE:               0.000000
-✅ ONNX output is sufficiently similar (≥95%) to PyTorch
-```
+[ONNX monolith vs PyTorch]
+  Image feat CosSim : 0.999982
+  Text  feat CosSim : 1.000000
+  logit_scale   MSE : 0.00000000
+  Softmax(sim) CosS : 1.000000
+  Softmax(sim)  MSE : 0.00000000
 
----
+/home/kurnianto/code/PE_onnx_export/onnx_test.py:110: UserWarning: 
+Using a target size (torch.Size([1])) that is different from the input size (torch.Size([])).
+This may lead to incorrect results due to broadcasting. Please ensure they match in size.
+  log_mse = F.mse_loss(pt[2], onx[2]).item()
 
-### Model: `PE-Core-L14-336`
+[ONNX modular vs PyTorch]
+  Image feat CosSim : 0.999982
+  Text  feat CosSim : 1.000000
+  logit_scale   MSE : 0.00000000
+  Softmax(sim) CosS : 1.000000
+  Softmax(sim)  MSE : 0.00000000
 
-```
-📁 Testing model: PE-Core-L14-336
+[Vision only] shape = torch.Size([1, 1024])
+[Text only]   shape = torch.Size([3, 1024])
+[Logit only]  value = 99.926315
+
+================================================================================
+Testing PE-Core-L14-336
+================================================================================
 Missing keys for loading model: []
 Unexpected keys for loading model: []
-ONNX input names: ['image', 'text']
-ONNX output names: ['image_features', 'text_features', 'logit_scale']
 
-Results
-Image features similarity: 1.0000
-Text features similarity:  1.0000
-logit_scale_mse:    0.0000
+[ONNX monolith vs PyTorch]
+  Image feat CosSim : 0.999992
+  Text  feat CosSim : 1.000000
+  logit_scale   MSE : 0.00000000
+  Softmax(sim) CosS : 1.000000
+  Softmax(sim)  MSE : 0.00000000
 
-PyTorch V-T sim_score: [[1.2530895e-06 9.9994528e-01 5.3491265e-05]]
-ONNX V-T sim_score:    [[1.2691706e-06 9.9994433e-01 5.4417742e-05]]
-Cosine similarity: 1.0000
-MSE:               0.000000
-✅ ONNX output is sufficiently similar (≥95%) to PyTorch
+[ONNX modular vs PyTorch]
+  Image feat CosSim : 0.999992
+  Text  feat CosSim : 1.000000
+  logit_scale   MSE : 0.00000000
+  Softmax(sim) CosS : 1.000000
+  Softmax(sim)  MSE : 0.00000000
 
+[Vision only] shape = torch.Size([1, 1024])
+[Text only]   shape = torch.Size([3, 1024])
+[Logit only]  value = 99.885727
 ```
+
 
 ---
 
