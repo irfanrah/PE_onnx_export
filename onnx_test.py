@@ -1,101 +1,178 @@
-import torch
-import onnxruntime as ort
+import os
+import glob
+import math
 import numpy as np
+import onnxruntime as ort
 from PIL import Image
+
+import torch
 import torch.nn.functional as F
+
 import core.vision_encoder.pe as pe
 import core.vision_encoder.transforms as transforms
 
 
-class CLIPONNXTester:
-    def __init__(self, config_name, onnx_path, image_path, texts):
-        self.config_name = config_name
-        self.onnx_path = onnx_path
+def _providers():
+    # CUDA if available, fallback to CPU
+    prov = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    try:
+        _ = ort.get_device()
+    except Exception:
+        prov = ["CPUExecutionProvider"]
+    return prov
+
+
+def _to_numpy(t):
+    return t.detach().cpu().numpy()
+
+
+def _print_header(title):
+    print("\n" + "=" * 80)
+    print(title)
+    print("=" * 80)
+    
+class CLIPONNXSuiteTester:
+    def __init__(self, image_path, texts, onnx_root="onnx_export",
+                 test_monolith=True, test_vision=True, test_text=True, test_logit=True, test_modular=True):
         self.image_path = image_path
         self.texts = texts
+        self.onnx_root = onnx_root
+        self.providers = _providers()
 
+        # test flags
+        self.test_monolith_flag = test_monolith
+        self.test_vision_flag = test_vision
+        self.test_text_flag = test_text
+        self.test_logit_flag = test_logit
+        self.test_modular_flag = test_modular
 
-        print(f"📁 Testing model: {self.config_name}")
+    # ---------- PyTorch reference ----------
+    def _load_torch(self, config_name):
+        model = pe.CLIP.from_config(config_name, pretrained=True).cuda().eval()
+        preprocess = transforms.get_image_transform(model.image_size)
+        tokenizer = transforms.get_text_tokenizer(model.context_length)
+        image = preprocess(Image.open(self.image_path)).unsqueeze(0).cuda()
+        text = tokenizer(self.texts).cuda()
+        return model, image, text
 
-        self._load_model()
-        self._prepare_inputs()
+    @torch.inference_mode()
+    def _torch_forward(self, model, image, text):
+        with torch.autocast("cuda"):
+            image_feat, text_feat, logit_scale = model(image, text)
+            sim = (logit_scale * image_feat @ text_feat.T).softmax(dim=-1)
+        return image_feat, text_feat, logit_scale, sim
 
-    def _load_model(self):
-        self.model = pe.CLIP.from_config(self.config_name, pretrained=True).cuda().eval()
-        self.preprocess = transforms.get_image_transform(self.model.image_size)
-        self.tokenizer = transforms.get_text_tokenizer(self.model.context_length)
+    # ---------- ONNX parts ----------
+    def test_monolith(self, path, image, text):
+        sess = ort.InferenceSession(path, providers=self.providers)
+        ins = {sess.get_inputs()[0].name: _to_numpy(image).astype(np.float32),
+               sess.get_inputs()[1].name: _to_numpy(text).astype(np.int32)}
+        outs = sess.run(None, ins)
+        image_feat = torch.from_numpy(outs[0]).cuda().float()
+        text_feat = torch.from_numpy(outs[1]).cuda().float()
+        logit_scale = torch.from_numpy(outs[2]).cuda().float()
+        sim = (logit_scale * image_feat @ text_feat.T).softmax(dim=-1)
+        return image_feat, text_feat, logit_scale, sim
 
-    def _prepare_inputs(self):
-        image_pil = Image.open(self.image_path)
-        self.image = self.preprocess(image_pil).unsqueeze(0).cuda()
-        self.text = self.tokenizer(self.texts).cuda()
-        print("Input shapes:", self.image.shape, self.text.shape)
+    def test_vision(self, path, image):
+        sess = ort.InferenceSession(path, providers=self.providers)
+        ins = {sess.get_inputs()[0].name: _to_numpy(image).astype(np.float32)}
+        image_feat = torch.from_numpy(sess.run(None, ins)[0]).cuda().float()
+        return image_feat
 
-    def run_torch_inference(self):
-        with torch.no_grad(), torch.autocast("cuda"):
-            image_feat, text_feat, logit_scale = self.model(self.image, self.text)
-            sim_score = (logit_scale * image_feat @ text_feat.T).softmax(dim=-1)
+    def test_text(self, path, text):
+        sess = ort.InferenceSession(path, providers=self.providers)
+        ins = {sess.get_inputs()[0].name: _to_numpy(text).astype(np.int32)}
+        text_feat = torch.from_numpy(sess.run(None, ins)[0]).cuda().float()
+        return text_feat
 
-        return image_feat, text_feat, logit_scale, sim_score
-
-    def run_onnx_inference(self):
-        image_cpu = self.image.cpu().numpy().astype(np.float32)
-        text_cpu = self.text.cpu().numpy().astype(np.int32)
-
-        ort_session = ort.InferenceSession(self.onnx_path, providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
-        input_names = [i.name for i in ort_session.get_inputs()]
-        output_names = [o.name for o in ort_session.get_outputs()]
-        print("ONNX input names:", input_names)
-        print("ONNX output names:", output_names)
-
-        input_feed = {
-            input_names[0]: image_cpu,
-            input_names[1]: text_cpu
-        }
-
-        outputs = ort_session.run(None, input_feed)
-        image_feat = torch.from_numpy(outputs[0]).cuda().float()
-        text_feat = torch.from_numpy(outputs[1]).cuda().float()
-        logit_scale = torch.from_numpy(outputs[2]).cuda().float()
-
-        sim_score = (
-            logit_scale * image_feat @ text_feat.T
-        ).softmax(dim=-1)
-
-        return image_feat, text_feat, logit_scale, sim_score
-
-    def compare_outputs(self):
-        image_feat_pt, text_feat_pt, logit_scale_pt, sim_score_pt = self.run_torch_inference()
-        image_feat_onnx, text_feat_onnx, logit_scale_onnx, sim_score_onnx = self.run_onnx_inference()
-
-        image_sim = F.cosine_similarity(image_feat_pt, image_feat_onnx).item()
-        text_sim = F.cosine_similarity(text_feat_pt, text_feat_onnx, dim=-1).mean().item()
-        logit_scale_mse = F.mse_loss(logit_scale_pt, logit_scale_onnx).item()
-        cos_sim = F.cosine_similarity(sim_score_pt, sim_score_onnx).item()
-        mse = F.mse_loss(sim_score_pt, sim_score_onnx).item()
-
-        print("\nResults")
-        print(f"Image features similarity: {image_sim:.4f}")
-        print(f"Text features similarity:  {text_sim:.4f}")
-        print(f"logit_scale_mse:    {logit_scale_mse:.4f}")
-        print(f"\nPyTorch V-T sim_score: {sim_score_pt.cpu().numpy()}")
-        print(f"ONNX V-T sim_score:    {sim_score_onnx.cpu().numpy()}")
-        print(f"Cosine similarity: {cos_sim:.4f}")
-        print(f"MSE:               {mse:.6f}")
-
-        if cos_sim > 0.95:
-            print("✅ ONNX output is sufficiently similar (≥95%) to PyTorch")
+    def test_logit_scale(self, path):
+        sess = ort.InferenceSession(path, providers=self.providers)
+        if len(sess.get_inputs()) == 0:
+            out = sess.run(None, {})
         else:
-            print("❌ ONNX output differs significantly. Check export fidelity.")
+            dummy_shape = tuple(i.shape for i in sess.get_inputs())[0]
+            dummy = np.zeros(dummy_shape, dtype=np.float32)
+            out = sess.run(None, {sess.get_inputs()[0].name: dummy})
+        logit_scale = torch.from_numpy(out[0]).cuda().float()
+        return logit_scale
 
-    def run_all(self):
-        self.compare_outputs()
+    def test_modular(self, vision_path, text_path, logit_scale_path, image, text):
+        image_feat = self.test_vision(vision_path, image)
+        text_feat = self.test_text(text_path, text)
+        logit_scale = self.test_logit_scale(logit_scale_path)
+        sim = (logit_scale * image_feat @ text_feat.T).softmax(dim=-1)
+        return image_feat, text_feat, logit_scale, sim
+
+    # ---------- metrics ----------
+    def _report(self, tag, pt, onx):
+        img_cos = F.cosine_similarity(pt[0], onx[0]).item()
+        txt_cos = F.cosine_similarity(pt[1], onx[1], dim=-1).mean().item()
+        log_mse = F.mse_loss(pt[2], onx[2]).item()
+        sim_cos = F.cosine_similarity(pt[3], onx[3]).item()
+        sim_mse = F.mse_loss(pt[3], onx[3]).item()
+
+        print(f"\n[{tag}]")
+        print(f"  Image feat CosSim : {img_cos:.6f}")
+        print(f"  Text  feat CosSim : {txt_cos:.6f}")
+        print(f"  logit_scale   MSE : {log_mse:.8f}")
+        print(f"  Softmax(sim) CosS : {sim_cos:.6f}")
+        print(f"  Softmax(sim)  MSE : {sim_mse:.8f}")
+
+    def _find_parts(self, cfg_dir, cfg_name):
+        parts = {"monolith": None, "vision": None, "text": None, "logit": None}
+        for f in glob.glob(os.path.join(cfg_dir, f"{cfg_name}_*.onnx")):
+            if "_monolith.onnx" in f:
+                parts["monolith"] = f
+            elif "_vision.onnx" in f:
+                parts["vision"] = f
+            elif "_text.onnx" in f:
+                parts["text"] = f
+            elif "_logit_scale.onnx" in f:
+                parts["logit"] = f
+        return parts
+
+    def run(self):
+        for cfg_dir in sorted(glob.glob(os.path.join(self.onnx_root, "*"))):
+            if not os.path.isdir(cfg_dir):
+                continue
+            cfg_name = os.path.basename(cfg_dir)
+            _print_header(f"Testing {cfg_name}")
+
+            model, image, text = self._load_torch(cfg_name)
+            pt_out = self._torch_forward(model, image, text)
+            parts = self._find_parts(cfg_dir, cfg_name)
+
+            if self.test_monolith_flag and parts["monolith"]:
+                onx_out = self.test_monolith(parts["monolith"], image, text)
+                self._report("ONNX monolith vs PyTorch", pt_out, onx_out)
+
+            if self.test_modular_flag and all(parts[k] for k in ("vision", "text", "logit")):
+                onx_out = self.test_modular(parts["vision"], parts["text"], parts["logit"], image, text)
+                self._report("ONNX modular vs PyTorch", pt_out, onx_out)
+
+            if self.test_vision_flag and parts["vision"]:
+                vision_feat = self.test_vision(parts["vision"], image)
+                print(f"[Vision only] shape={vision_feat.shape}")
+
+            if self.test_text_flag and parts["text"]:
+                text_feat = self.test_text(parts["text"], text)
+                print(f"[Text only] shape={text_feat.shape}")
+
+            if self.test_logit_flag and parts["logit"]:
+                logit_scale = self.test_logit_scale(parts["logit"])
+                print(f"[Logit only] value={logit_scale.item():.6f}")
+
 
 if __name__ == "__main__":
-    tester = CLIPONNXTester(
-        config_name="PE-Core-B16-224",
-        onnx_path="onnx_export/PE-Core-B16-224/PE-Core-B16-224.onnx",
+    tester = CLIPONNXSuiteTester(
         image_path="assets/dog.jpg",
-        texts=["a diagram", "a dog", "a cat"]
+        texts=["a diagram", "a dog", "a cat"],
+        onnx_root="onnx_export",
+        test_monolith=True,
+        test_vision=True,
+        test_text=True,
+        test_logit=True,
+        test_modular=True
     )
-    tester.run_all()
+    tester.run()
