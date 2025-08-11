@@ -1,5 +1,6 @@
 *.onnx
 *.pt
+*.engine
 *.data
 
 *.egg-info

@@ -1,6 +1,5 @@
 import os
 import glob
-import math
 import numpy as np
 import onnxruntime as ort
 from PIL import Image
@@ -22,32 +21,50 @@ except Exception:
     TRT_AVAILABLE = False
 
 
-def _providers():
-    # CUDA if available, fallback to CPU
-    prov = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-    try:
-        _ = ort.get_device()
-    except Exception:
-        prov = ["CPUExecutionProvider"]
-    return prov
+# ---- helpers ----
+def _trt_to_torch_dtype(dt):
+    return {
+        trt.DataType.FLOAT: torch.float32,
+        trt.DataType.HALF:  torch.float16,
+        trt.DataType.INT8:  torch.int8,
+        trt.DataType.INT32: torch.int32,
+        trt.DataType.BOOL:  torch.bool,
+    }[dt]
 
+def _run_v3(context):
+    if hasattr(context, "execute_v3"):
+        return context.execute_v3()  # 동기
+    elif hasattr(context, "enqueue_v3"):
+        return context.enqueue_v3(0)  # 기본 CUDA stream(0)
+    elif hasattr(context, "execute_async_v3"):
+        return context.execute_async_v3(stream_handle=0)  # 기본 스트림
+    else:
+        raise RuntimeError("TensorRT v3 execution API not found in this build.")
+
+def _providers():
+    # CUDA EP가 실제로 가능한지 체크
+    provs = ort.get_available_providers()
+    if "CUDAExecutionProvider" in provs:
+        return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    return ["CPUExecutionProvider"]
 
 def _to_numpy(t):
     return t.detach().cpu().numpy()
-
 
 def _print_header(title):
     print("\n" + "=" * 80)
     print(title)
     print("=" * 80)
-    
+
+
 class CLIPONNXSuiteTester:
-    def __init__(self, image_path, texts, onnx_root="onnx_export",
+    def __init__(self, image_path, texts, onnx_root="onnx_export", trt_root="trt_export",
                  test_monolith=True, test_vision=True, test_text=True,
                  test_logit=True, test_modular=True, test_trt=False):
         self.image_path = image_path
         self.texts = texts
         self.onnx_root = onnx_root
+        self.trt_root = trt_root
         self.providers = _providers()
 
         # test flags
@@ -77,53 +94,86 @@ class CLIPONNXSuiteTester:
     # ---------- ONNX parts ----------
     def test_monolith(self, path, image, text):
         sess = ort.InferenceSession(path, providers=self.providers)
-        ins = {sess.get_inputs()[0].name: _to_numpy(image).astype(np.float32),
-               sess.get_inputs()[1].name: _to_numpy(text).astype(np.int32)}
+        ins = {
+            sess.get_inputs()[0].name: _to_numpy(image).astype(np.float32, copy=False),
+            sess.get_inputs()[1].name: _to_numpy(text).astype(np.int32, copy=False),
+        }
         outs = sess.run(None, ins)
         image_feat = torch.from_numpy(outs[0]).cuda().float()
-        text_feat = torch.from_numpy(outs[1]).cuda().float()
+        text_feat  = torch.from_numpy(outs[1]).cuda().float()
         logit_scale = torch.from_numpy(outs[2]).cuda().float()
         sim = (logit_scale * image_feat @ text_feat.T).softmax(dim=-1)
         return image_feat, text_feat, logit_scale, sim
 
     def test_vision(self, path, image):
         sess = ort.InferenceSession(path, providers=self.providers)
-        ins = {sess.get_inputs()[0].name: _to_numpy(image).astype(np.float32)}
+        ins = {sess.get_inputs()[0].name: _to_numpy(image).astype(np.float32, copy=False)}
         image_feat = torch.from_numpy(sess.run(None, ins)[0]).cuda().float()
         return image_feat
 
-    def test_trt_vision(self, path, image):
+    # ---------- TensorRT (vision only; CUDA torch.Tensor 입력 가정) ----------
+    def test_trt_vision(self, path, image_cuda: torch.Tensor):
         if not TRT_AVAILABLE:
             raise RuntimeError("TensorRT is not available")
+        assert image_cuda.is_cuda, "input must be a CUDA torch.Tensor"
+
         logger = trt.Logger(trt.Logger.ERROR)
         with open(path, "rb") as f, trt.Runtime(logger) as runtime:
             engine = runtime.deserialize_cuda_engine(f.read())
-        for idx in range(engine.num_bindings):
-            if engine.binding_is_input(idx):
-                inp_idx = idx
-            else:
-                out_idx = idx
+
+        num = engine.num_io_tensors
+        tensor_names = [engine.get_tensor_name(i) for i in range(num)]
+        inp_names  = [n for n in tensor_names if engine.get_tensor_mode(n) == trt.TensorIOMode.INPUT]
+        out_names  = [n for n in tensor_names if engine.get_tensor_mode(n) == trt.TensorIOMode.OUTPUT]
+        assert len(inp_names) == 1, "this sample assumes a single input"
+
+        input_name = inp_names[0]
+
+        # 엔진이 기대하는 입력 dtype에 맞춰 캐스팅/contiguous
+        trt_in_dtype   = engine.get_tensor_dtype(input_name)
+        torch_in_dtype = _trt_to_torch_dtype(trt_in_dtype)
+        if image_cuda.dtype != torch_in_dtype:
+            image_cuda = image_cuda.to(dtype=torch_in_dtype)
+        if not image_cuda.is_contiguous():
+            image_cuda = image_cuda.contiguous()
+
         with engine.create_execution_context() as context:
-            context.set_binding_shape(inp_idx, tuple(image.shape))
-            inp = _to_numpy(image).astype(np.float32)
-            out_shape = tuple(context.get_binding_shape(out_idx))
-            d_in = cuda.mem_alloc(inp.nbytes)
-            out = np.empty(out_shape, dtype=np.float32)
-            d_out = cuda.mem_alloc(out.nbytes)
-            stream = cuda.Stream()
-            cuda.memcpy_htod_async(d_in, inp, stream)
-            bindings = [0] * engine.num_bindings
-            bindings[inp_idx] = int(d_in)
-            bindings[out_idx] = int(d_out)
-            context.execute_async_v2(bindings=bindings, stream_handle=stream.handle)
-            cuda.memcpy_dtoh_async(out, d_out, stream)
-            stream.synchronize()
-        image_feat = torch.from_numpy(out).cuda().float()
-        return image_feat
+            # 동적 입력 shape 설정
+            context.set_input_shape(input_name, tuple(image_cuda.shape))
+
+            # 출력 텐서들 준비 (CUDA 텐서로 미리 할당 → data_ptr 바인딩)
+            out_tensors = {}
+            for name in out_names:
+                dims = context.get_tensor_shape(name)  # tensorrt.Dims
+                out_shape = tuple(int(d) for d in dims)  # 확정 shape로 변환
+                trt_out_dtype   = engine.get_tensor_dtype(name)
+                torch_out_dtype = _trt_to_torch_dtype(trt_out_dtype)
+                out_tensors[name] = torch.empty(out_shape, dtype=torch_out_dtype, device="cuda")
+
+            # 바인딩 주소 채우기 (zero-copy)
+            bindings = [0] * num
+            bindings[tensor_names.index(input_name)] = int(image_cuda.data_ptr())
+            for name in out_names:
+                bindings[tensor_names.index(name)] = int(out_tensors[name].data_ptr())
+
+            # 컨텍스트에 주소 등록
+            for i in range(num):
+                name = engine.get_tensor_name(i)
+                context.set_tensor_address(name, bindings[i])
+
+            # 실행
+            ok = _run_v3(context)
+            if ok is False:
+                raise RuntimeError("TensorRT v3 execution failed")
+
+        # 출력 하나면 텐서만, 여러 개면 dict 반환
+        if len(out_names) == 1:
+            return out_tensors[out_names[0]]
+        return out_tensors
 
     def test_text(self, path, text):
         sess = ort.InferenceSession(path, providers=self.providers)
-        ins = {sess.get_inputs()[0].name: _to_numpy(text).astype(np.int32)}
+        ins = {sess.get_inputs()[0].name: _to_numpy(text).astype(np.int32, copy=False)}
         text_feat = torch.from_numpy(sess.run(None, ins)[0]).cuda().float()
         return text_feat
 
@@ -132,8 +182,9 @@ class CLIPONNXSuiteTester:
         if len(sess.get_inputs()) == 0:
             out = sess.run(None, {})
         else:
-            dummy_shape = tuple(i.shape for i in sess.get_inputs())[0]
-            dummy = np.zeros(dummy_shape, dtype=np.float32)
+            # 동적 입력이면 1로 채워 실행
+            shp = tuple(dim if isinstance(dim, int) and dim > 0 else 1 for dim in sess.get_inputs()[0].shape)
+            dummy = np.zeros(shp, dtype=np.float32)
             out = sess.run(None, {sess.get_inputs()[0].name: dummy})
         logit_scale = torch.from_numpy(out[0]).cuda().float()
         return logit_scale
@@ -162,7 +213,7 @@ class CLIPONNXSuiteTester:
 
     def _find_parts(self, cfg_dir, cfg_name):
         parts = {"monolith": None, "vision": None, "text": None,
-                 "logit": None, "vision_trt": None}
+                 "logit": None}
         for f in glob.glob(os.path.join(cfg_dir, f"{cfg_name}_*.onnx")):
             if "_monolith.onnx" in f:
                 parts["monolith"] = f
@@ -172,12 +223,6 @@ class CLIPONNXSuiteTester:
                 parts["text"] = f
             elif "_logit_scale.onnx" in f:
                 parts["logit"] = f
-        engine_path = os.path.join(cfg_dir, "vision.engine")
-        if os.path.exists(engine_path):
-            parts["vision_trt"] = engine_path
-        alt_engine = os.path.join(cfg_dir, f"{cfg_name}_vision.engine")
-        if os.path.exists(alt_engine):
-            parts["vision_trt"] = alt_engine
         return parts
 
     def run(self):
@@ -207,17 +252,19 @@ class CLIPONNXSuiteTester:
                 print(f"  CosSim(PT vs ONNX): {cos_pt_onx:.6f}")
                 print(f"  MSE   (PT vs ONNX): {mse_pt_onx:.8f}")
 
-                if self.test_trt_flag and parts.get("vision_trt"):
-                    trt_feat = self.test_trt_vision(parts["vision_trt"], image)
-                    cos_pt_trt = F.cosine_similarity(pt_out[0], trt_feat).item()
-                    mse_pt_trt = F.mse_loss(pt_out[0], trt_feat).item()
-                    cos_onx_trt = F.cosine_similarity(vision_feat, trt_feat).item()
-                    mse_onx_trt = F.mse_loss(vision_feat, trt_feat).item()
-                    print(f"[Vision TRT] shape={trt_feat.shape}")
-                    print(f"  CosSim(PT vs TRT): {cos_pt_trt:.6f}")
-                    print(f"  MSE   (PT vs TRT): {mse_pt_trt:.8f}")
-                    print(f"  CosSim(ONNX vs TRT): {cos_onx_trt:.6f}")
-                    print(f"  MSE   (ONNX vs TRT): {mse_onx_trt:.8f}")
+                if self.test_trt_flag:
+                    trt_paths = glob.glob(os.path.join(self.trt_root, "*.engine"))
+                    for trt_path in trt_paths:
+                        trt_feat = self.test_trt_vision(trt_path, image)
+                        cos_pt_trt = F.cosine_similarity(pt_out[0], trt_feat).item()
+                        mse_pt_trt = F.mse_loss(pt_out[0], trt_feat).item()
+                        cos_onx_trt = F.cosine_similarity(vision_feat, trt_feat).item()
+                        mse_onx_trt = F.mse_loss(vision_feat, trt_feat).item()
+                        print(f"[Vision TRT] shape={trt_feat.shape}  file={os.path.basename(trt_path)}")
+                        print(f"  CosSim(PT vs TRT):   {cos_pt_trt:.6f}")
+                        print(f"  MSE   (PT vs TRT):   {mse_pt_trt:.8f}")
+                        print(f"  CosSim(ONNX vs TRT): {cos_onx_trt:.6f}")
+                        print(f"  MSE   (ONNX vs TRT): {mse_onx_trt:.8f}")
 
             if self.test_text_flag and parts["text"]:
                 text_feat = self.test_text(parts["text"], text)
@@ -233,6 +280,7 @@ if __name__ == "__main__":
         image_path="assets/dog.jpg",
         texts=["a diagram", "a dog", "a cat"],
         onnx_root="onnx_export",
+        trt_root="trt_export",
         test_monolith=True,
         test_vision=True,
         test_text=True,
