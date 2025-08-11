@@ -10,7 +10,6 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union, 
 import numpy as np
 import torch
 import torch.nn as nn
-from einops import rearrange
 from timm.layers import DropPath
 from torch import nn
 from torch.nn import functional as F
@@ -124,23 +123,22 @@ class SelfAttention(nn.Module):
     def forward(self, x, attn_mask=None):
         # original_sdp = F.scaled_dot_product_attention
         F.scaled_dot_product_attention = manual_scaled_dot_product_attention
-        batch, seq, embed_dim = x.shape
+        b, seq, _ = x.shape
         proj = F.linear(x, self.in_proj_weight, self.in_proj_bias)
 
-        # reshape to 3, E and not E, 3 is deliberate for better memory coalescing and keeping same order as chunk()
+        # reshape to 3, E and not E, 3 is deliberate for better memory coalescing
+        # and keeping same order as chunk()
         proj = (
-            proj.unflatten(-1, (3, embed_dim))
-            .unsqueeze(0)
-            .transpose(0, -2)
-            .squeeze(-2)
+            proj.view(b, seq, 3, self.embed_dim)
+            .permute(2, 0, 1, 3)
             .contiguous()
         )
         q, k, v = proj[0], proj[1], proj[2]
 
         # Use "q_" so that we don't accidentally quit in pdb :)
-        q = rearrange(q, "b s (h d) -> b h s d", h=self.num_heads)
-        k = rearrange(k, "b s (h d) -> b h s d", h=self.num_heads)
-        v = rearrange(v, "b s (h d) -> b h s d", h=self.num_heads)
+        q = q.view(b, seq, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        k = k.view(b, seq, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        v = v.view(b, seq, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
 
         if self.rope:
             q, k = self.rope(q, k)
@@ -148,7 +146,11 @@ class SelfAttention(nn.Module):
         attn = F.scaled_dot_product_attention(
             q, k, v, attn_mask=None, dropout_p=0.0, is_causal=False, scale=self.scale
         )
-        attn = rearrange(attn, "b h s d -> b s (h d)")
+        attn = (
+            attn.permute(0, 2, 1, 3)
+            .contiguous()
+            .view(b, seq, self.embed_dim)
+        )
 
         return F.linear(attn, self.out_proj.weight, self.out_proj.bias)
 
@@ -504,15 +506,15 @@ class VisionTransformer(nn.Module):
         layer_idx: int = -1,
         strip_cls_token: bool = False
     ):
-        batch, _, h, w = x.shape
+        _, _, h, w = x.shape
         grid_h, grid_w = h // self.patch_size, w // self.patch_size
 
         x = self.conv1(x)
-        x = x.permute(0, 2, 3, 1).reshape(batch, -1, self.width)
+        x = x.flatten(2).transpose(1, 2)
 
         if self.use_cls_token:
             x = torch.cat(
-                [self.class_embedding.view(1, 1, -1).expand(batch, -1, -1), x],
+                [self.class_embedding.view(1, 1, -1).expand(x.shape[0], -1, -1), x],
                 dim=1,
             )
 

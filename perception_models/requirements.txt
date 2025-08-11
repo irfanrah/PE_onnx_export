@@ -30,3 +30,6 @@ webdataset==0.2.111
 fsspec
 datatrove
 ftfy
+pycuda
+onnxruntime-gpu
+onnx
