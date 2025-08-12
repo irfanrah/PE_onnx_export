@@ -1,6 +1,6 @@
 # PE ONNX Export
 
-Unofficial implementation for exporting [Perception Encoder (PE)] models to ONNX format.
+Unofficial implementation for exporting [Perception Encoder (PE)] models to ONNX and TensorRT format.
 
 ## 🔧 Features
 
