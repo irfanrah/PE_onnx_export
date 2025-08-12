@@ -78,7 +78,7 @@ class AttentionPooling(nn.Module):
         )
 
     def forward(self, x: torch.Tensor):
-        batch, _, _ = x.shape
+        batch = x.size(0)
 
         q = self.probe.repeat((batch, 1, 1)).to(x.dtype)
         x = self.attn(q, x, x, need_weights=False)[0]
@@ -123,7 +123,7 @@ class SelfAttention(nn.Module):
     def forward(self, x, attn_mask=None):
         # original_sdp = F.scaled_dot_product_attention
         F.scaled_dot_product_attention = manual_scaled_dot_product_attention
-        b, seq, _ = x.shape
+        b, seq, _ = x.size()
         proj = F.linear(x, self.in_proj_weight, self.in_proj_bias)
 
         # reshape to 3, E and not E, 3 is deliberate for better memory coalescing
@@ -506,7 +506,7 @@ class VisionTransformer(nn.Module):
         layer_idx: int = -1,
         strip_cls_token: bool = False
     ):
-        _, _, h, w = x.shape
+        _, _, h, w = x.size()
         grid_h, grid_w = h // self.patch_size, w // self.patch_size
 
         x = self.conv1(x)
@@ -514,7 +514,7 @@ class VisionTransformer(nn.Module):
 
         if self.use_cls_token:
             x = torch.cat(
-                [self.class_embedding.view(1, 1, -1).expand(x.shape[0], -1, -1), x],
+                [self.class_embedding.view(1, 1, -1).expand(x.size(0), -1, -1), x],
                 dim=1,
             )
 
@@ -647,8 +647,8 @@ class TextTransformer(nn.Module):
 
     def build_cls_mask(self, text):
         cls_mask = (text != self.pad_id).unsqueeze(1)
-        cls_mask = F.pad(cls_mask, (1, 0, cls_mask.shape[2], 0), value=True)
-        additive_mask = torch.empty(cls_mask.shape, device=cls_mask.device)
+        cls_mask = F.pad(cls_mask, (1, 0, cls_mask.size(2), 0), value=True)
+        additive_mask = torch.empty(cls_mask.size(), device=cls_mask.device)
         additive_mask.fill_(0)
         additive_mask.masked_fill_(~cls_mask, float("-inf"))
         additive_mask = torch.repeat_interleave(additive_mask, self.heads, 0)
@@ -664,14 +664,14 @@ class TextTransformer(nn.Module):
         elif pool_type == "argmax":
             # take features from the eot embedding (eot_token is the highest number in each sequence)
             assert text is not None
-            pooled, tokens = x[torch.arange(x.shape[0]), text.argmax(dim=-1)], x
+            pooled, tokens = x[torch.arange(x.size(0)), text.argmax(dim=-1)], x
         else:
             pooled = tokens = x
 
         return pooled, tokens
 
     def forward(self, text):
-        seq_len = text.shape[1]
+        seq_len = text.size(1)
         x = self.token_embedding(
             text
         ) 
@@ -717,7 +717,7 @@ class CLIP(TextTransformer):
         return F.normalize(x, dim=-1) if normalize else x
 
     def encode_video(self, video, normalize: bool = False): # b n c h w
-        b, n, c, h, w = video.shape
+        b, n, c, h, w = video.size()
         frms = video.reshape(b * n, c, h, w)
         frm_feats = self.encode_image(frms, normalize=normalize)
         video_feats = frm_feats.reshape(b, n, -1)

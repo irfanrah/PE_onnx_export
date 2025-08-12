@@ -41,15 +41,15 @@ def apply_rotary_emb(freqs, t, start_index=0, scale=1.0, seq_dim=-2):
     dtype = t.dtype
 
     if t.ndim == 3:
-        seq_len = t.shape[seq_dim]
+        seq_len = t.size(seq_dim)
         freqs = freqs[-seq_len:]
 
-    rot_dim = freqs.shape[-1]
+    rot_dim = freqs.size(-1)
     end_index = start_index + rot_dim
 
     assert (
-        rot_dim <= t.shape[-1]
-    ), f"feature dimension {t.shape[-1]} is not of sufficient size to rotate in all the positions {rot_dim}"
+        rot_dim <= t.size(-1)
+    ), f"feature dimension {t.size(-1)} is not of sufficient size to rotate in all the positions {rot_dim}"
 
     t_left, t, t_right = (
         t[..., :start_index],
@@ -174,7 +174,7 @@ class RotaryEmbedding(Module):
             not self.use_xpos
         ), "you must use `.rotate_queries_and_keys` method instead and pass in both queries and keys, for length extrapolatable rotary embeddings"
 
-        device, dtype, seq_len = t.device, t.dtype, t.shape[seq_dim]
+        device, dtype, seq_len = t.device, t.dtype, t.size(seq_dim)
 
         freqs = self.forward(
             self.get_seq_pos(seq_len, device=device, dtype=dtype, offset=offset),
@@ -190,7 +190,7 @@ class RotaryEmbedding(Module):
     def rotate_queries_with_cached_keys(self, q, k, seq_dim=None, offset=0):
         seq_dim = default(seq_dim, self.default_seq_dim)
 
-        q_len, k_len = q.shape[seq_dim], k.shape[seq_dim]
+        q_len, k_len = q.size(seq_dim), k.size(seq_dim)
         assert q_len <= k_len
 
         rotated_q = self.rotate_queries_or_keys(
@@ -207,7 +207,7 @@ class RotaryEmbedding(Module):
         seq_dim = default(seq_dim, self.default_seq_dim)
 
         assert self.use_xpos
-        device, dtype, seq_len = q.device, q.dtype, q.shape[seq_dim]
+        device, dtype, seq_len = q.device, q.dtype, q.size(seq_dim)
 
         seq = self.get_seq_pos(seq_len, dtype=dtype, device=device)
 
@@ -234,7 +234,7 @@ class RotaryEmbedding(Module):
         if (
             should_cache
             and exists(self.cached_scales)
-            and (seq_len + offset) <= self.cached_scales.shape[0]
+            and (seq_len + offset) <= self.cached_scales.size(0)
         ):
             return self.cached_scales[offset : (offset + seq_len)]
 
@@ -282,7 +282,7 @@ class RotaryEmbedding(Module):
         if (
             should_cache
             and exists(self.cached_freqs)
-            and (offset + seq_len) <= self.cached_freqs.shape[0]
+            and (offset + seq_len) <= self.cached_freqs.size(0)
         ):
             return self.cached_freqs[offset : (offset + seq_len)].detach()
 
@@ -332,7 +332,7 @@ class Rope2D:
 
             if self.use_cls_token:
                 freq = torch.cat(
-                    [torch.zeros(1, freq.shape[-1], device=device), freq], dim=0
+                    [torch.zeros(1, freq.size(-1), device=device), freq], dim=0
                 )
 
             self.freq = freq[None, ...]
