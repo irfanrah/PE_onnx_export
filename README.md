@@ -42,6 +42,22 @@ Unofficial implementation for exporting [Perception Encoder (PE)] models to ONNX
    python onnx_test.py
    ```
 
+5. **Export TensoRT**
+
+  ```bash
+  trtexec \
+  --onnx=onnx_export/PE-Core-L14-336/PE-Core-L14-336_vision.onnx \
+  --saveEngine=vision.engine \
+  --minShapes=image:1x3x336x336 \
+  --optShapes=image:4x3x336x336 \
+  --maxShapes=image:16x3x336x336
+  ```
+
+6. **Test TensorRT vs ONNX**
+
+  ```bash
+  python onnx_test.py
+  ```
 ---
 
 ## ✅ Sample Output
@@ -103,7 +119,16 @@ Unexpected keys for loading model: []
   Softmax(sim) CosS : 1.000000
   Softmax(sim)  MSE : 0.00000000
 
+[Vision TRT] shape=torch.Size([1, 1024])  file=vision.engine
+  CosSim(PT vs TRT):   0.999993
+  MSE   (PT vs TRT):   0.00000001
+  CosSim(ONNX vs TRT): 1.000000
+  MSE   (ONNX vs TRT): 0.00000000
+
 [Vision only] shape = torch.Size([1, 1024])
+[Vision ONNX] shape=torch.Size([1, 1024])
+  CosSim(PT vs ONNX): 0.999993
+  MSE   (PT vs ONNX): 0.00000001
 [Text only]   shape = torch.Size([3, 1024])
 [Logit only]  value = 99.885727
 ```

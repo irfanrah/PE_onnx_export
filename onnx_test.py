@@ -12,12 +12,9 @@ import core.vision_encoder.transforms as transforms
 
 try:
     import tensorrt as trt
-    import pycuda.driver as cuda
-    import pycuda.autoinit  # noqa: F401 - initializes CUDA context
     TRT_AVAILABLE = True
 except Exception:
     trt = None  # type: ignore
-    cuda = None  # type: ignore
     TRT_AVAILABLE = False
 
 

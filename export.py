@@ -162,6 +162,7 @@ class ONNXExporter:
             output_names=["image_features"],
             dynamic_axes={"image": {0: "batch"}, "image_features": {0: "batch"}},
             opset_version=self.opset,
+            # dynamo=True
         )
 
     def _export_text(self, tmodel, output_file, text_seq_len, batch_size=1):

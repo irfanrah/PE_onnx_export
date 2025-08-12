@@ -56,9 +56,9 @@ class AttentionPooling(nn.Module):
         self.embed_dim = embed_dim
         self.num_heads = num_heads
 
-        assert (
-            self.embed_dim % num_heads == 0
-        ), "embed_dim must be divisible by num_heads"
+        # assert (
+        #     self.embed_dim % num_heads == 0
+        # ), "embed_dim must be divisible by num_heads"
 
         self.probe = nn.Parameter(torch.randn(1, num_probe, self.embed_dim))
         self.attn = nn.MultiheadAttention(
@@ -103,9 +103,9 @@ class SelfAttention(nn.Module):
 
         self.num_heads = num_heads
         self.head_dim = embed_dim // num_heads
-        assert (
-            self.head_dim * num_heads == self.embed_dim
-        ), "embed_dim must be divisible by num_heads"
+        # assert (
+        #     self.head_dim * num_heads == self.embed_dim
+        # ), "embed_dim must be divisible by num_heads"
 
         # To make this compatibile with nn.MultiHeadAttention
         self.in_proj_weight = Parameter(torch.empty(3 * embed_dim, embed_dim))
@@ -465,8 +465,8 @@ class VisionTransformer(nn.Module):
 
     def _sample_abs_posemb(self, grid_h: int, grid_w: int):
         """Interpolates the absolute position embedding if necessary."""
-        if self.posemb_grid_size == grid_h and self.posemb_grid_size == grid_w:
-            return self.positional_embedding[None, ...]
+        # if self.posemb_grid_size == grid_h and self.posemb_grid_size == grid_w:
+        return self.positional_embedding[None, ...]
 
         pos_embed = self.positional_embedding
         if self.use_cls_token:
