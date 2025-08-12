@@ -3,18 +3,16 @@ import torch
 import onnx
 from onnx.external_data_helper import convert_model_to_external_data
 import core.vision_encoder.pe as pe
-import shutil
 import torch.nn as nn
-import glob
 
 # ---------- Wrappers ----------
 class VisionEncoderWrapper(nn.Module):
     def __init__(self, model): super().__init__(); self.model = model
-    def forward(self, image: torch.Tensor): return self.model.encode_image(image)
+    def forward(self, image: torch.Tensor): return self.model.encode_image(image, normalize=True)
 
 class TextEncoderWrapper(nn.Module):
     def __init__(self, model): super().__init__(); self.model = model
-    def forward(self, text: torch.Tensor): return self.model.encode_text(text)
+    def forward(self, text: torch.Tensor): return self.model.encode_text(text, normalize=True)
 
 class LogitScaleWrapper(nn.Module):
     def __init__(self, model): super().__init__(); self.model = model
