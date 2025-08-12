@@ -10,7 +10,6 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union, 
 import numpy as np
 import torch
 import torch.nn as nn
-from einops import rearrange
 from timm.layers import DropPath
 from torch import nn
 from torch.nn import functional as F
@@ -57,9 +56,9 @@ class AttentionPooling(nn.Module):
         self.embed_dim = embed_dim
         self.num_heads = num_heads
 
-        assert (
-            self.embed_dim % num_heads == 0
-        ), "embed_dim must be divisible by num_heads"
+        # assert (
+        #     self.embed_dim % num_heads == 0
+        # ), "embed_dim must be divisible by num_heads"
 
         self.probe = nn.Parameter(torch.randn(1, num_probe, self.embed_dim))
         self.attn = nn.MultiheadAttention(
@@ -79,7 +78,7 @@ class AttentionPooling(nn.Module):
         )
 
     def forward(self, x: torch.Tensor):
-        batch, _, _ = x.shape
+        batch = x.size(0)
 
         q = self.probe.repeat((batch, 1, 1)).to(x.dtype)
         x = self.attn(q, x, x, need_weights=False)[0]
@@ -104,9 +103,9 @@ class SelfAttention(nn.Module):
 
         self.num_heads = num_heads
         self.head_dim = embed_dim // num_heads
-        assert (
-            self.head_dim * num_heads == self.embed_dim
-        ), "embed_dim must be divisible by num_heads"
+        # assert (
+        #     self.head_dim * num_heads == self.embed_dim
+        # ), "embed_dim must be divisible by num_heads"
 
         # To make this compatibile with nn.MultiHeadAttention
         self.in_proj_weight = Parameter(torch.empty(3 * embed_dim, embed_dim))
@@ -124,23 +123,22 @@ class SelfAttention(nn.Module):
     def forward(self, x, attn_mask=None):
         # original_sdp = F.scaled_dot_product_attention
         F.scaled_dot_product_attention = manual_scaled_dot_product_attention
-        batch, seq, embed_dim = x.shape
+        b, seq, _ = x.size()
         proj = F.linear(x, self.in_proj_weight, self.in_proj_bias)
 
-        # reshape to 3, E and not E, 3 is deliberate for better memory coalescing and keeping same order as chunk()
+        # reshape to 3, E and not E, 3 is deliberate for better memory coalescing
+        # and keeping same order as chunk()
         proj = (
-            proj.unflatten(-1, (3, embed_dim))
-            .unsqueeze(0)
-            .transpose(0, -2)
-            .squeeze(-2)
+            proj.view(b, seq, 3, self.embed_dim)
+            .permute(2, 0, 1, 3)
             .contiguous()
         )
         q, k, v = proj[0], proj[1], proj[2]
 
         # Use "q_" so that we don't accidentally quit in pdb :)
-        q = rearrange(q, "b s (h d) -> b h s d", h=self.num_heads)
-        k = rearrange(k, "b s (h d) -> b h s d", h=self.num_heads)
-        v = rearrange(v, "b s (h d) -> b h s d", h=self.num_heads)
+        q = q.view(b, seq, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        k = k.view(b, seq, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        v = v.view(b, seq, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
 
         if self.rope:
             q, k = self.rope(q, k)
@@ -148,7 +146,11 @@ class SelfAttention(nn.Module):
         attn = F.scaled_dot_product_attention(
             q, k, v, attn_mask=None, dropout_p=0.0, is_causal=False, scale=self.scale
         )
-        attn = rearrange(attn, "b h s d -> b s (h d)")
+        attn = (
+            attn.permute(0, 2, 1, 3)
+            .contiguous()
+            .view(b, seq, self.embed_dim)
+        )
 
         return F.linear(attn, self.out_proj.weight, self.out_proj.bias)
 
@@ -463,8 +465,8 @@ class VisionTransformer(nn.Module):
 
     def _sample_abs_posemb(self, grid_h: int, grid_w: int):
         """Interpolates the absolute position embedding if necessary."""
-        if self.posemb_grid_size == grid_h and self.posemb_grid_size == grid_w:
-            return self.positional_embedding[None, ...]
+        # if self.posemb_grid_size == grid_h and self.posemb_grid_size == grid_w:
+        return self.positional_embedding[None, ...]
 
         pos_embed = self.positional_embedding
         if self.use_cls_token:
@@ -504,15 +506,15 @@ class VisionTransformer(nn.Module):
         layer_idx: int = -1,
         strip_cls_token: bool = False
     ):
-        batch, _, h, w = x.shape
+        _, _, h, w = x.size()
         grid_h, grid_w = h // self.patch_size, w // self.patch_size
 
         x = self.conv1(x)
-        x = x.permute(0, 2, 3, 1).reshape(batch, -1, self.width)
+        x = x.flatten(2).transpose(1, 2)
 
         if self.use_cls_token:
             x = torch.cat(
-                [self.class_embedding.view(1, 1, -1).expand(batch, -1, -1), x],
+                [self.class_embedding.view(1, 1, -1).expand(x.size(0), -1, -1), x],
                 dim=1,
             )
 
@@ -645,8 +647,8 @@ class TextTransformer(nn.Module):
 
     def build_cls_mask(self, text):
         cls_mask = (text != self.pad_id).unsqueeze(1)
-        cls_mask = F.pad(cls_mask, (1, 0, cls_mask.shape[2], 0), value=True)
-        additive_mask = torch.empty(cls_mask.shape, device=cls_mask.device)
+        cls_mask = F.pad(cls_mask, (1, 0, cls_mask.size(2), 0), value=True)
+        additive_mask = torch.empty(cls_mask.size(), device=cls_mask.device)
         additive_mask.fill_(0)
         additive_mask.masked_fill_(~cls_mask, float("-inf"))
         additive_mask = torch.repeat_interleave(additive_mask, self.heads, 0)
@@ -662,14 +664,14 @@ class TextTransformer(nn.Module):
         elif pool_type == "argmax":
             # take features from the eot embedding (eot_token is the highest number in each sequence)
             assert text is not None
-            pooled, tokens = x[torch.arange(x.shape[0]), text.argmax(dim=-1)], x
+            pooled, tokens = x[torch.arange(x.size(0)), text.argmax(dim=-1)], x
         else:
             pooled = tokens = x
 
         return pooled, tokens
 
     def forward(self, text):
-        seq_len = text.shape[1]
+        seq_len = text.size(1)
         x = self.token_embedding(
             text
         ) 
@@ -715,7 +717,7 @@ class CLIP(TextTransformer):
         return F.normalize(x, dim=-1) if normalize else x
 
     def encode_video(self, video, normalize: bool = False): # b n c h w
-        b, n, c, h, w = video.shape
+        b, n, c, h, w = video.size()
         frms = video.reshape(b * n, c, h, w)
         frm_feats = self.encode_image(frms, normalize=normalize)
         video_feats = frm_feats.reshape(b, n, -1)

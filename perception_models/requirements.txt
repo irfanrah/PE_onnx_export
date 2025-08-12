@@ -30,3 +30,6 @@ webdataset==0.2.111
 fsspec
 datatrove
 ftfy
+onnxruntime-gpu==1.22.0
+onnx==1.18.0
+onnxscript==0.3.2
