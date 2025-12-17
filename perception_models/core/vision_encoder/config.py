@@ -136,6 +136,41 @@ PE_TEXT_CONFIG["PE-Core-B16-224"] = PE_TEXT_CONFIG["PE-Core-L14-336"]
 
 
 
+PE_VISION_CONFIG["PE-Core-S16-384"] = PEConfig(
+    image_size=384,
+    patch_size=16,
+    width=384,
+    layers=12,
+    heads=6,
+    mlp_ratio=4.0,
+    pool_type="attn",
+    output_dim=512,
+    use_cls_token=True,
+)
+PE_TEXT_CONFIG["PE-Core-S16-384"] = PETextConfig(
+    context_length=32,
+    width=512,
+    heads=8,
+    layers=12,
+    output_dim=512
+)
+
+
+
+PE_VISION_CONFIG["PE-Core-T16-384"] = PEConfig(
+    image_size=384,
+    patch_size=16,
+    width=192,
+    layers=12,
+    heads=3,
+    mlp_ratio=4.0,
+    pool_type="attn",
+    output_dim=512,
+    use_cls_token=True,
+)
+PE_TEXT_CONFIG["PE-Core-T16-384"] = PE_TEXT_CONFIG["PE-Core-S16-384"]
+
+
 
 
 
