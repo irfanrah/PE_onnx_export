@@ -21,7 +21,9 @@ def main():
     DEVICE = "cuda:0"
     WEIGHT_PATH = "weights/FT_PE-Core-L14-336_260318.pt"
     VISION_ONNX_PATH = "onnx_export_lora/FT_PE-Core-L14-336_260318/FT_PE-Core-L14-336_260318_vision.onnx"
+    # VISION_ONNX_PATH = "/home/kurnianto/code/KhonkaenViolence/PE_onnx_export/video_encoder.onnx"
     IMAGE_PATH = "assets/cat.jpg"
+    NUM_FRAMES = 8
 
     # ========== 1. PyTorch Reference ==========
     print("Loading PyTorch model with LoRA...")
@@ -40,28 +42,30 @@ def main():
     model, preprocess, tokenizer, max_words, image_resolution = initializer.initialize()
     model.eval()
 
-    image = preprocess(Image.open(IMAGE_PATH)).unsqueeze(0).to(DEVICE)
+    # Build a fake video: repeat the same image NUM_FRAMES times -> (1, N, C, H, W)
+    frame = preprocess(Image.open(IMAGE_PATH))  # (C, H, W)
+    video = frame.unsqueeze(0).repeat(NUM_FRAMES, 1, 1, 1).unsqueeze(0).to(DEVICE)  # (1, N, C, H, W)
 
     with torch.no_grad(), torch.autocast("cuda"):
-        image_features_pt = model.encode_image(image)
+        video_features_pt = model.encode_video(video)
 
-    print(f"[PyTorch] image_features shape: {image_features_pt.shape}")
-    print(f"[PyTorch] image_features:\n{image_features_pt}")
+    print(f"[PyTorch] video_features shape: {video_features_pt.shape}")
+    print(f"[PyTorch] video_features:\n{video_features_pt}")
 
     # ========== 2. ONNX Vision Inference ==========
     print("\nLoading ONNX vision model...")
     vision_sess = ort.InferenceSession(VISION_ONNX_PATH, providers=_providers())
-    image_np = image.detach().cpu().numpy().astype(np.float32)
-    image_features_onnx = vision_sess.run(None, {vision_sess.get_inputs()[0].name: image_np})[0]
-    image_features_onnx = torch.from_numpy(image_features_onnx).to(DEVICE).float()
+    video_np = video.detach().cpu().numpy().astype(np.float32)
+    video_features_onnx = vision_sess.run(None, {vision_sess.get_inputs()[0].name: video_np})[0]
+    video_features_onnx = torch.from_numpy(video_features_onnx).to(DEVICE).float()
 
-    print(f"[ONNX]    image_features shape: {image_features_onnx.shape}")
-    print(f"[ONNX]    image_features:\n{image_features_onnx}")
+    print(f"[ONNX]    video_features shape: {video_features_onnx.shape}")
+    print(f"[ONNX]    video_features:\n{video_features_onnx}")
 
     # ========== 3. Comparison ==========
-    image_features_pt = image_features_pt.float()
-    cos_sim = torch.nn.functional.cosine_similarity(image_features_pt, image_features_onnx).item()
-    mse = torch.nn.functional.mse_loss(image_features_pt, image_features_onnx).item()
+    video_features_pt = video_features_pt.float()
+    cos_sim = torch.nn.functional.cosine_similarity(video_features_pt, video_features_onnx).item()
+    mse = torch.nn.functional.mse_loss(video_features_pt, video_features_onnx).item()
     print(f"\nCosSim: {cos_sim:.6f}  MSE: {mse:.8f}")
 
 

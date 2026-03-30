@@ -13,8 +13,8 @@ class VisionEncoderWrapper(nn.Module):
         super().__init__()
         self.model = model
 
-    def forward(self, image: torch.Tensor):
-        return self.model.encode_image(image, normalize=True)
+    def forward(self, video: torch.Tensor):
+        return self.model.encode_video(video, normalize=False)
 
 
 class TextEncoderWrapper(nn.Module):
@@ -23,7 +23,7 @@ class TextEncoderWrapper(nn.Module):
         self.model = model
 
     def forward(self, text: torch.Tensor):
-        return self.model.encode_text(text, normalize=True)
+        return self.model.encode_text(text, normalize=False)
 
 
 class LogitScaleWrapper(nn.Module):
@@ -102,13 +102,14 @@ class LoRAONNXExporter:
             print(f"Exporting vision: {export_name}")
             out_file = os.path.join(out_dir, f"{export_name}_vision.onnx")
             vmodel = VisionEncoderWrapper(model).eval()
-            image = torch.randn((1,) + image_shape, dtype=torch.float32, device=next(model.parameters()).device)
+            num_frames = 8
+            video = torch.randn((1, num_frames) + image_shape, dtype=torch.float32, device=next(model.parameters()).device)
             torch.onnx.export(
-                vmodel, (image,), out_file,
+                vmodel, (video,), out_file,
                 export_params=True,
-                input_names=["image"],
-                output_names=["image_features"],
-                dynamic_axes={"image": {0: "batch"}, "image_features": {0: "batch"}},
+                input_names=["video"],
+                output_names=["video_features"],
+                dynamic_axes={"video": {0: "batch", 1: "num_frames"}, "video_features": {0: "batch"}},
                 opset_version=self.opset,
             )
             print(f"  -> {out_file}")
